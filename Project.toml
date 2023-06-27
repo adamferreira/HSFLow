@@ -3,6 +3,8 @@ uuid = "d9a5b085-8d29-4b25-a38b-0eb66ab43058"
 authors = ["Adam Ferreira"]
 version = "0.0.1"
 
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 
 [compat]
 julia = "1.6"
