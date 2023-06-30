@@ -1,4 +1,15 @@
-mutable struct Job
+
+JOB_STATES = [
+    :NEW,
+    :WAITING,
+    :QUEUED,
+    :RUNNING,
+    :KILLED,
+    :CANCELED,
+    :DONE
+]
+
+struct Job
     # Unique Id of the job
     jid::Int
     # Name of the job
@@ -15,6 +26,10 @@ mutable struct Job
     ptid::Int
     # Unique Id of the Node that created this Job
     pnid::Int
+    # Unique Id of the Thread that ran this Job
+    rtid::Int
+    # Unique Id of the Node that ran this Job
+    rnid::Int
     # Number of CPU this job reserves
     # -- ncpu::Int
     # Quantity of MEMORY this job reserves
@@ -33,6 +48,8 @@ mutable struct Job
     start_time::Union{DateTime, Nothing}
     # Time when this job ended (set by the scheduler)
     end_time::Union{DateTime, Nothing}
+    # Time when this job should be available for running
+    start_after::DateTime
     # Maximum amount of time this job can spend in queue
     max_runtime::Period
      # Maximum amount of time this job can spend running
@@ -51,6 +68,8 @@ mutable struct Job
         pjid = 999,
         ptid = threadid(),
         pnid = nodeid(),
+        rtid = 0,
+        rnid = 0,
         priority = 1,
         state = :NEW,
         cron = nothing,
@@ -58,12 +77,35 @@ mutable struct Job
         schedule_time = nothing,
         start_time = nothing,
         end_time = nothing,
+        start_after = Dates.now(),
         max_runtime = Dates.Year(1),
         max_scheduletime = Dates.Month(1),
         depends = []
         )
-        return new(jid,name,f,fargs,fkwargs,pjid,ptid,pnid,priority,state,cron,creation_time,schedule_time,start_time,end_time,max_runtime,max_scheduletime,depends)
+        return new(
+            jid,
+            name,
+            f,
+            fargs,
+            fkwargs,
+            pjid,
+            ptid,
+            pnid,
+            rtid,
+            rnid,
+            priority,
+            state,
+            cron,
+            creation_time,
+            schedule_time,
+            start_time,
+            end_time,
+            start_after,
+            max_runtime,
+            max_scheduletime,
+            depends
+        )
     end
 end
 
-Base.run(j::Job) = j.f(j.fargs...;j.fkwargs...)
+#Base.run(j::Job) = j.f(j.fargs...;j.fkwargs...)

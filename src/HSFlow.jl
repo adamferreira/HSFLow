@@ -1,11 +1,11 @@
 module HSFlow
 using Dates
+using DataFrames
+using Distributed: myid
+using DataStructures: PriorityQueue, enqueue!
 
 include("cron.jl")
-println("Hello")
-
-
-export CronSlice, Cron,
+export  CronSlice, Cron,
         yearly,
         annually,
         monthly,
@@ -15,26 +15,82 @@ export CronSlice, Cron,
         hourly,
         once,
         nnext
-dt = now()
-c = daily()
-@show dt
-@show c
+
+        # Job counter (atomic and local to node)
+const JOB_ID = Threads.Atomic{Int}(2)
+next_job_id() = Threads.atomic_add!(JOB_ID, 1)
+include("jobs.jl")
+export  Job,
+        nodeid,
+        threadid
+
+nodeid() = myid()
+threadid() = Base.Threads.threadid()
+
+include("schedulers.jl")
+export JobScheduler, scheduler
+
+# Forward calls with node's scheduler
+scheduler() = SCHEDULER
+for fct in Symbol[
+        :enqueue_waiting!,
+        :schedule_job!
+    ]
+    @eval $(fct)(args...; kwargs...) = $(fct)(scheduler(), args...; kwargs...)
+end
+
+function __init__()
+    global SCHEDULER = JobScheduler()
+    # Add job that queue all waiting jobs (starting now)
+    queuing = Job(;
+        name = "Queuing job",
+        f = s -> enqueue_waiting!(s),
+        fargs = scheduler(),
+        start_after = Dates.now(),
+        # Master job = 1
+        pjid = 1,
+        # This will run every 2 seconds (Use Threads.Condition.notify instead ? So that put in queue in bloquing and not consuming resources)
+        cron = Cron("*/2","*","*",'*','*','*')
+    )
+
+    running = Job(;
+        name = "Running job",
+        f = s -> launch_queued!(s),
+        fargs = scheduler(),
+        start_after = Dates.now(),
+        # Master job = 1
+        pjid = 1,
+        # This will run every 2 seconds (Use Threads.Condition.notify instead ? So that put in queue in bloquing and not consuming resources)
+        cron = Cron("*/2","*","*",'*','*','*')
+    )
+
+    # Schedule first jobs
+    schedule_job!(scheduler(), queuing)
+    schedule_job!(scheduler(), running)
+    # Launch those first jobs
+    launch_queued!(scheduler())
+end
+
 """
-@show Dates.month(dt)
-@show yearly().month
-@show collect(yearly().month)
-#@show iterate(yearly().dayofweek)
-@show next_slice(yearly().month, Dates.month(dt))
-@show next_slice(yearly().month, min(yearly().month))
-@show tonext_month(dt, yearly())
-#@show Dates.tonext(now(), weekly())
+@show j = Job()
+s = JobScheduler()
+
+j1 = Job()
+j2 = Job()
+j3 = Job(; depends = [2,3])
+
+schedule_job!(s, j1)
+schedule_job!(s, j2)
+schedule_job!(s, j3)
+
+#j.f = x -> x + 10
+#j.fargs = 5
+#@show j.f(j.fargs...; j.fkwargs...)
+#@show Base.invoke(j.f, Tuple{Int}, j.fargs...; j.fkwargs...)
+
+println(s.datatable)
+
+enqueue_waiting!(s)
+println(s.queue)
 """
-
-
-
-dump(c)
-@show next_slice(c.minute, min(c.minute))
-@show tonext_second(dt, c)
-@show tonext_hour(dt, c)
-@show Dates.tonext(dt, c)
 end
