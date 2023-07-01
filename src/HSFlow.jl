@@ -2,7 +2,7 @@ module HSFlow
 using Dates
 using DataFrames
 using Distributed: myid
-using DataStructures: PriorityQueue, enqueue!
+using DataStructures: PriorityQueue, enqueue!, dequeue!
 
 include("cron.jl")
 export  CronSlice, Cron,
@@ -28,7 +28,7 @@ nodeid() = myid()
 threadid() = Base.Threads.threadid()
 
 include("schedulers.jl")
-export JobScheduler, scheduler
+export JobScheduler, scheduler, schedule_job!
 
 # Forward calls with node's scheduler
 scheduler() = SCHEDULER
@@ -40,12 +40,12 @@ for fct in Symbol[
 end
 
 function __init__()
-    global SCHEDULER = JobScheduler()
+    global SCHEDULER = JobScheduler(3)
     # Add job that queue all waiting jobs (starting now)
     queuing = Job(;
         name = "Queuing job",
         f = s -> enqueue_waiting!(s),
-        fargs = scheduler(),
+        fargs = SCHEDULER,
         start_after = Dates.now(),
         # Master job = 1
         pjid = 1,
@@ -56,7 +56,7 @@ function __init__()
     running = Job(;
         name = "Running job",
         f = s -> launch_queued!(s),
-        fargs = scheduler(),
+        fargs = SCHEDULER,
         start_after = Dates.now(),
         # Master job = 1
         pjid = 1,
@@ -65,10 +65,11 @@ function __init__()
     )
 
     # Schedule first jobs
-    schedule_job!(scheduler(), queuing)
-    schedule_job!(scheduler(), running)
-    # Launch those first jobs
-    launch_queued!(scheduler())
+    #schedule_job!(scheduler(), queuing)
+    #schedule_job!(scheduler(), running)
+
+    launch_runners!(SCHEDULER)
+    #enqueue_waiting!(SCHEDULER)
 end
 
 """

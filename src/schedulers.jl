@@ -1,6 +1,9 @@
 abstract type AsbtractJobScheduler end
+abstract type AsbtractRunner end
 
 mutable struct JobScheduler
+    # Number of runners (Thread) that will be launched
+    nrunners::Int
     # Holding job data
     datatable::DataFrame
     # Lock for datatable
@@ -9,38 +12,111 @@ mutable struct JobScheduler
     queue::PriorityQueue{Int,Int}
     # For locking the queue
     queue_lock::Threads.ReentrantLock
-    # Condition to notify threads that new job are being queud
-    queue_event::Threads.Condition
+    # Channels (blocking) to send jobs to local runners
+    channels::Vector{Channel{Int}}
+    # Inner loop (thread) that will affect job to runners
+    inner_loop
+    runners
+    test::Bool
 
-    function JobScheduler()
+    function JobScheduler(nrunners::Int)
         # Create the datatable with the same column as Job's attributes
         datatable = DataFrame([
             (n => t[]) 
             for (n, t) in zip(fieldnames(Job), fieldtypes(Job))
         ])
         return new(
+            nrunners,
             datatable,
             Threads.ReentrantLock(),
             PriorityQueue{Int,Int}(),
             Threads.ReentrantLock(),
-            Threads.Condition()
+            [Channel{Int}(10) for i ∈ 1:nrunners],
+            nothing,
+            nothing,
+            true
         )
+    end
+end
+
+#const RUNNER_POOL = Base.RefValue{Channel{Int}}()
+
+mutable struct Runner <: AsbtractRunner
+    scheduler::JobScheduler
+    # Channel (from scheduler) where this runner will take jobs
+    channel::Channel{Int}
+    # Underlying Task of this runner
+    task::Task
+    # On which thread this Runner is running
+    function Runner(s::JobScheduler, c::Channel{Int})
+        t = Threads.@spawn begin
+            while s.test
+                jid = take!(c)
+                println("Launching job $jid on thread $(threadid())")
+                job = from_id(s, jid)
+                # Update job runtine informations
+                update!(s, jid, :state, :RUNNING)
+                update!(s, jid, :rtid, threadid())
+                update!(s, jid, :rnid, nodeid())
+                update!(s, jid, :start_time, Dates.now())
+                # Blocking call to the job's core function
+                try
+                    # Use invokelatest to avoid the error; method too new to be called from this world context.
+                    res = Base.invokelatest(job.f, job.fargs...; job.fkwargs...)
+                    update!(s, jid, :state, :DONE)
+                    update!(s, jid, :freturn, res)
+                catch e
+                    error(e)
+                    update!(s, jid, :state, :ERROR)
+                    update!(s, jid, :freturn, e)
+                finally
+                    update!(s, jid, :end_time, Dates.now())
+                end
+            end
+        end
+        return new(s, c, t)
     end
 end
 
 function unsafe_from_id(s::JobScheduler, jid::Int)::DataFrameRow
     # No view to not alter datatable
-    df = filter(row -> row.jid == jid, s.datatable; view=false)
+    df = filter(row -> row.jid == jid, s.datatable; view=true)
     #TODO: Throw JobNotFound Exception if length(df) != 1?
     return df[1,:]
 end
 
+function from_id(s::JobScheduler, jid::Int)::DataFrameRow
+    row = nothing
+    @lock s.datatable_lock begin
+        row = unsafe_from_id(s, jid)
+    end
+    return row
+end
+
+function update!(s::JobScheduler, jid::Int, col::Symbol, val)
+    @lock s.datatable_lock begin
+        j = unsafe_from_id(s, jid)
+        j[col] = val
+    end
+end
+
+function launch_runners!(s::JobScheduler)
+    # Launch main inner loop that will queue jobs
+    s.inner_loop = Threads.@spawn begin
+        while s.test
+            enqueue_waiting!(s)
+            sleep(2)
+        end
+    end
+    # Launch runners, each on a different threads
+    s.runners = [Runner(s, s.channels[i]) for i ∈ 1:length(s.channels)]
+end
+
 """
-    Queue all elligible jobs (to be sued in a permanent job)
+    Queue all elligible jobs (to be used in a permanent job)
 """
 function enqueue_waiting!(s::JobScheduler)
     # Wait for all threads to take their jobs from the queue before queuing new ones
-    wait(s.queue_event)
     @lock s.datatable_lock begin
         # Queue only waiting jobs with with correct dates
         datenow = Dates.now()
@@ -55,38 +131,19 @@ function enqueue_waiting!(s::JobScheduler)
             end
         end
     end
-    # Notify threads that queue was feed with jobs
-    notify(s.queue_event; all=true)
-end
-
-
-function launch_queued!(s::JobScheduler)
-    # Wait for job to be QUEUED by enqueue_waiting!
-    wait(s.queue_event)
-    # Safely take first job of the queue
-    jid = 0
-    @lock s.queue_lock begin
-        jid = dequeue!(s.queue)
-    end
-    # Notify that job as been taken from queue
-    notify(s.queue_event; all=true)
-    # Flag job as running
-    j = nothing
-    @lock s.datatable_lock begin
-        j = unsafe_from_id(s, jid)
-    end
-    j.state = :RUNNING
-    # Launch job in a Thread
-    Threads.@spawn begin
-        # To be used is this job spawns offpsring jobs
-        local curr_jid() = jid 
-        @show j.f(j.fargs...;j.fkwargs...)
+    # Also submit last job
+    # Blocking (only if runner channel is full) send to runners
+    if length(s.queue) > 0
+        @lock s.queue_lock begin
+            put!(s.runners[next_runner_id()].channel, dequeue!(s.queue))
+        end
     end
 end
 
 function schedule_job!(s::JobScheduler, j::Job)
     # Add job as a row in the data table
     @lock s.datatable_lock begin
+        #lenght(unsafe_from_id(s, j.jid)) || error("Job with id $(j.jid) already exists.")
         drows = size(s.datatable)[1]
         push!(
             s.datatable,
