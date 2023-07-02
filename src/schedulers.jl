@@ -15,8 +15,9 @@ mutable struct JobScheduler
     # Channels (blocking) to send jobs to local runners
     channels::Vector{Channel{Int}}
     # Inner loop (thread) that will affect job to runners
-    inner_loop
-    runners
+    inner_loop::Union{Nothing, Task}
+    runners#::Union{Nothing, Vector{AsbtractRunner}}
+    next_runner::Threads.Atomic{Int}
     test::Bool
 
     function JobScheduler(nrunners::Int)
@@ -33,13 +34,35 @@ mutable struct JobScheduler
             Threads.ReentrantLock(),
             [Channel{Int}(10) for i ∈ 1:nrunners],
             nothing,
-            nothing,
+            [],
+            Threads.Atomic{Int}(1),
             true
         )
     end
 end
 
 #const RUNNER_POOL = Base.RefValue{Channel{Int}}()
+"""
+Rewrite of [`Threads.@spawn`](@ref) without scheduling the task.
+And forcing task to stick to their original thread (Runner)
+"""
+macro sticky_spawn(expr)
+    letargs = Base._lift_one_interp!(expr)
+
+    thunk = esc(:(()->($expr)))
+    var = esc(Base.sync_varname)
+    quote
+        let $(letargs...)
+            local task = Task($thunk)
+            # Disallow task migration, we want those task to always run on their threads
+            task.sticky = true
+            if $(Expr(:islocal, var))
+                put!($var, task)
+            end
+            task
+        end
+    end
+end
 
 mutable struct Runner <: AsbtractRunner
     scheduler::JobScheduler
@@ -48,8 +71,9 @@ mutable struct Runner <: AsbtractRunner
     # Underlying Task of this runner
     task::Task
     # On which thread this Runner is running
-    function Runner(s::JobScheduler, c::Channel{Int})
-        t = Threads.@spawn begin
+    function Runner(s::JobScheduler, c::Channel{Int}, target_tid::Int)
+        t = @sticky_spawn begin
+            println("Launching Runner on thread $(threadid())")
             while s.test
                 jid = take!(c)
                 println("Launching job $jid on thread $(threadid())")
@@ -74,8 +98,16 @@ mutable struct Runner <: AsbtractRunner
                 end
             end
         end
+        # The Runner's task is created but not scheduled, affect it to a specific thread
+        ccall(:jl_set_task_tid, Cvoid, (Any, Cint), t, target_tid-1)
+        # The Runner can be started
+        schedule(t)
         return new(s, c, t)
     end
+end
+
+function next_runner_id!(s::JobScheduler)::Int
+    return Base.max(1, Threads.atomic_add!(s.next_runner, 1) % (s.nrunners+1))
 end
 
 function unsafe_from_id(s::JobScheduler, jid::Int)::DataFrameRow
@@ -102,14 +134,14 @@ end
 
 function launch_runners!(s::JobScheduler)
     # Launch main inner loop that will queue jobs
-    s.inner_loop = Threads.@spawn begin
+    s.inner_loop = Threads.@spawn begin 
         while s.test
             enqueue_waiting!(s)
-            sleep(2)
+            sleep(0.05)
         end
     end
     # Launch runners, each on a different threads
-    s.runners = [Runner(s, s.channels[i]) for i ∈ 1:length(s.channels)]
+    s.runners = [Runner(s, s.channels[i], i) for i ∈ 1:s.nrunners]
 end
 
 """
@@ -135,7 +167,7 @@ function enqueue_waiting!(s::JobScheduler)
     # Blocking (only if runner channel is full) send to runners
     if length(s.queue) > 0
         @lock s.queue_lock begin
-            put!(s.runners[next_runner_id()].channel, dequeue!(s.queue))
+            put!(s.runners[next_runner_id!(s)].channel, dequeue!(s.queue))
         end
     end
 end

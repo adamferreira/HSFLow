@@ -40,7 +40,7 @@ for fct in Symbol[
 end
 
 function __init__()
-    global SCHEDULER = JobScheduler(3)
+    global SCHEDULER = JobScheduler(Threads.nthreads())
     # Add job that queue all waiting jobs (starting now)
     queuing = Job(;
         name = "Queuing job",
@@ -69,6 +69,7 @@ function __init__()
     #schedule_job!(scheduler(), running)
 
     launch_runners!(SCHEDULER)
+    sleep(1)
     #enqueue_waiting!(SCHEDULER)
 end
 
