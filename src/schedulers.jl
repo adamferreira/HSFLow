@@ -134,18 +134,22 @@ end
 
 function launch_runners!(s::JobScheduler)
     # Launch main inner loop that will queue jobs
-    s.inner_loop = Threads.@spawn begin 
+    s.inner_loop = @sticky_spawn begin 
         while s.test
             enqueue_waiting!(s)
             sleep(0.05)
         end
     end
+    # The inner loop is sticked to the main thread (1)
+    ccall(:jl_set_task_tid, Cvoid, (Any, Cint), s.inner_loop, 0)
+    schedule(s.inner_loop)
+
     # Launch runners, each on a different threads
     s.runners = [Runner(s, s.channels[i], i) for i ∈ 1:s.nrunners]
 end
 
 """
-    Queue all elligible jobs (to be used in a permanent job)
+    Queue all elligible jobs (to be used in the inner loop)
 """
 function enqueue_waiting!(s::JobScheduler)
     # Wait for all threads to take their jobs from the queue before queuing new ones
