@@ -16,7 +16,7 @@ struct Job
     # Name of the job
     name::String
     # Function to be executed by the job
-    f
+    f::Function
     # Arguments of `f`
     fargs::Tuple
     # Keywords arguments of `f`
@@ -33,10 +33,6 @@ struct Job
     rtid::Int
     # Unique Id of the Node that ran this Job
     rnid::Int
-    # Number of CPU this job reserves
-    # -- ncpu::Int
-    # Quantity of MEMORY this job reserves
-    # -- nmem::Int
     # Job priority
     priority::Int
     # Job State (RUNNING, DONE, KILLED, ...)
@@ -61,6 +57,10 @@ struct Job
     # TODO: Use dict to as depends per states ?
     depends::Vector{Int}
     # TODO: error and output logfiles ?
+    # Number of CPU this job reserves
+    # -- ncpu::Int
+    # Quantity of MEMORY this job reserves
+    # -- nmem::Int
 
     function Job(;
         jid = next_job_id(),
@@ -122,4 +122,41 @@ struct Job
             fkwargs = Base.merge(NamedTuple(), kwargs)
         )
     end
+end
+
+"""
+Create the next occurrence of a repeating job.
+The returned job have the same parameters as `j` (even `jid`), except for the Dates related fields.
+Returns `Nothing` is the given job has no periodicity.
+"""
+function nextjob(j::Job)
+    if j.cron === nothing
+        return nothing
+    end
+    start = isnothing(j.start_time) ? j.creation_time : j.start_time
+    println("Parent is $(j.jid), starts after $(start)")
+    return Job(;
+        jid = next_job_id(),
+        name = j.name,
+        f = j.f,
+        fargs = j.fargs,
+        fkwargs = j.fkwargs,
+        freturn = j.freturn,
+        pjid = j.jid,
+        ptid = threadid(),
+        pnid = nodeid(),
+        rtid = 0,
+        rnid = 0,
+        priority = j.priority,
+        state = :NEW,
+        cron = j.cron,
+        creation_time = Dates.now(),
+        schedule_time = nothing,
+        start_time = nothing,
+        end_time = nothing,
+        start_after = Dates.tonext(start, j.cron),
+        max_runtime = j.max_runtime,
+        max_scheduletime = j.max_scheduletime,
+        depends = j.depends
+    )
 end

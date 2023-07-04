@@ -1,7 +1,80 @@
 abstract type AsbtractJobScheduler end
 abstract type AsbtractRunner end
 
-mutable struct JobScheduler
+
+#const RUNNER_POOL = Base.RefValue{Channel{Int}}()
+"""
+Rewrite of [`Threads.@spawn`](@ref) without scheduling the task.
+And forcing task to stick to their original thread (Runner)
+"""
+macro sticky_spawn(expr)
+    letargs = Base._lift_one_interp!(expr)
+
+    thunk = esc(:(()->($expr)))
+    var = esc(Base.sync_varname)
+    quote
+        let $(letargs...)
+            local task = Task($thunk)
+            # Disallow task migration, we want those task to always run on their threads
+            task.sticky = true
+            if $(Expr(:islocal, var))
+                put!($var, task)
+            end
+            task
+        end
+    end
+end
+
+mutable struct Runner <: AsbtractRunner
+    scheduler::AsbtractJobScheduler
+    # Channel (from scheduler) where this runner will take jobs
+    channel::Channel{Int}
+    # Underlying Task of this runner
+    task::Task
+    # On which thread this Runner is running
+    function Runner(s::AsbtractJobScheduler, c::Channel{Int}, target_tid::Int)
+        t = @sticky_spawn begin
+            println("Launching Runner on thread $(threadid())")
+            while s.test
+                jid = take!(c)
+                println("Launching job $jid on thread $(threadid())")
+                job = from_id(s, jid)
+                # TODO: view = false ?
+                # Update job runtine informations
+                update!(s, jid, :state, :RUNNING)
+                update!(s, jid, :rtid, threadid())
+                update!(s, jid, :rnid, nodeid())
+                update!(s, jid, :start_time, Dates.now())
+                # Blocking call to the job's core function
+                try
+                    # Use invokelatest to avoid the error; method too new to be called from this world context.
+                    res = Base.invokelatest(job.f, job.fargs...; job.fkwargs...)
+                    update!(s, jid, :state, :DONE)
+                    update!(s, jid, :freturn, res)
+                catch e
+                    error(e)
+                    update!(s, jid, :state, :ERROR)
+                    update!(s, jid, :freturn, e)
+                finally
+                    update!(s, jid, :end_time, Dates.now())
+                    # Schedule the next job occurence if this the current job is periodic
+                    # Transform `from_id(s, jid)` (DataFrameRow) into a Job object, now its a copy of whats in the scheduler
+                    nextj = nextjob(Job(; Dict(pairs(job))...))
+                    if !isnothing(nextj)
+                        schedule_job!(s, nextj)
+                    end
+                end
+            end
+        end
+        # The Runner's task is created but not scheduled, affect it to a specific thread
+        ccall(:jl_set_task_tid, Cvoid, (Any, Cint), t, target_tid-1)
+        # The Runner can be started
+        schedule(t)
+        return new(s, c, t)
+    end
+end
+
+mutable struct JobScheduler <: AsbtractJobScheduler
     # Number of runners (Thread) that will be launched
     nrunners::Int
     # Holding job data
@@ -41,71 +114,6 @@ mutable struct JobScheduler
     end
 end
 
-#const RUNNER_POOL = Base.RefValue{Channel{Int}}()
-"""
-Rewrite of [`Threads.@spawn`](@ref) without scheduling the task.
-And forcing task to stick to their original thread (Runner)
-"""
-macro sticky_spawn(expr)
-    letargs = Base._lift_one_interp!(expr)
-
-    thunk = esc(:(()->($expr)))
-    var = esc(Base.sync_varname)
-    quote
-        let $(letargs...)
-            local task = Task($thunk)
-            # Disallow task migration, we want those task to always run on their threads
-            task.sticky = true
-            if $(Expr(:islocal, var))
-                put!($var, task)
-            end
-            task
-        end
-    end
-end
-
-mutable struct Runner <: AsbtractRunner
-    scheduler::JobScheduler
-    # Channel (from scheduler) where this runner will take jobs
-    channel::Channel{Int}
-    # Underlying Task of this runner
-    task::Task
-    # On which thread this Runner is running
-    function Runner(s::JobScheduler, c::Channel{Int}, target_tid::Int)
-        t = @sticky_spawn begin
-            println("Launching Runner on thread $(threadid())")
-            while s.test
-                jid = take!(c)
-                println("Launching job $jid on thread $(threadid())")
-                job = from_id(s, jid)
-                # Update job runtine informations
-                update!(s, jid, :state, :RUNNING)
-                update!(s, jid, :rtid, threadid())
-                update!(s, jid, :rnid, nodeid())
-                update!(s, jid, :start_time, Dates.now())
-                # Blocking call to the job's core function
-                try
-                    # Use invokelatest to avoid the error; method too new to be called from this world context.
-                    res = Base.invokelatest(job.f, job.fargs...; job.fkwargs...)
-                    update!(s, jid, :state, :DONE)
-                    update!(s, jid, :freturn, res)
-                catch e
-                    error(e)
-                    update!(s, jid, :state, :ERROR)
-                    update!(s, jid, :freturn, e)
-                finally
-                    update!(s, jid, :end_time, Dates.now())
-                end
-            end
-        end
-        # The Runner's task is created but not scheduled, affect it to a specific thread
-        ccall(:jl_set_task_tid, Cvoid, (Any, Cint), t, target_tid-1)
-        # The Runner can be started
-        schedule(t)
-        return new(s, c, t)
-    end
-end
-
 function next_runner_id!(s::JobScheduler)::Int
     return Base.max(1, Threads.atomic_add!(s.next_runner, 1) % (s.nrunners+1))
 end
@@ -140,7 +148,7 @@ function launch_runners!(s::JobScheduler)
             sleep(0.05)
         end
     end
-    # The inner loop is sticked to the main thread (1)
+    # The inner loop is sticked to the main thread (1 (0 in the ccal))
     ccall(:jl_set_task_tid, Cvoid, (Any, Cint), s.inner_loop, 0)
     schedule(s.inner_loop)
 

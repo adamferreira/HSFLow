@@ -20,7 +20,7 @@ export  CronSlice, Cron,
 const JOB_ID = Threads.Atomic{Int}(2)
 next_job_id() = Threads.atomic_add!(JOB_ID, 1)
 include("jobs.jl")
-export  Job,
+export  Job, nextjob,
         nodeid,
         threadid
 
