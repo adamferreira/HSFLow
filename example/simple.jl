@@ -37,6 +37,13 @@ running = Job(;
 )
 
 
-schedule_job!(s, running)
+@schedule begin
+    a = 5
+    return a + 10
+end
 
-@show s.datatable
+sleep(2)
+x = fetch_job(s, 5)
+@show x
+
+#@show s.datatable

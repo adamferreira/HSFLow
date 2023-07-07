@@ -23,6 +23,8 @@ struct Job
     fkwargs::NamedTuple
     # Returned value of `f` (will hold Exception if `f` failed)
     freturn::Any
+    # Event that notify for `freturn` availability
+    fdata_avail::Base.Event
     # Unique Id of the Job that created this Job
     pjid::Int
     # Unique Id of the Thread that created this Job
@@ -69,6 +71,7 @@ struct Job
         fargs = (),
         fkwargs = NamedTuple(),
         freturn = nothing,
+        fdata_avail = Base.Event(),
         pjid = 1,
         ptid = threadid(),
         pnid = nodeid(),
@@ -96,6 +99,7 @@ struct Job
             fargs,
             fkwargs,
             freturn,
+            fdata_avail,
             pjid,
             ptid,
             pnid,
@@ -133,8 +137,7 @@ function nextjob(j::Job)
     if j.cron === nothing
         return nothing
     end
-    start = isnothing(j.start_time) ? j.creation_time : j.start_time
-    println("Parent is $(j.jid), starts after $(start)")
+    start = something(j.start_time, j.creation_time)
     return Job(;
         jid = next_job_id(),
         name = j.name,

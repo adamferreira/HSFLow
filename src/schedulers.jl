@@ -52,11 +52,13 @@ mutable struct Runner <: AsbtractRunner
                     update!(s, jid, :state, :DONE)
                     update!(s, jid, :freturn, res)
                 catch e
-                    error(e)
+                    error(e) #debug
                     update!(s, jid, :state, :ERROR)
                     update!(s, jid, :freturn, e)
                 finally
                     update!(s, jid, :end_time, Dates.now())
+                    # Notify that current's Job data is available
+                    notify(j.fdata_avail)
                     # Schedule the next job occurence if this the current job is periodic
                     # Transform `from_id(s, jid)` (DataFrameRow) into a Job object, now its a copy of whats in the scheduler
                     nextj = nextjob(Job(; Dict(pairs(job))...))
@@ -89,7 +91,9 @@ mutable struct JobScheduler <: AsbtractJobScheduler
     channels::Vector{Channel{Int}}
     # Inner loop (thread) that will affect job to runners
     inner_loop::Union{Nothing, Task}
-    runners#::Union{Nothing, Vector{AsbtractRunner}}
+    # Runners
+    runners::Vector{AsbtractRunner}
+    # Round-robin runner id generator
     next_runner::Threads.Atomic{Int}
     test::Bool
 
@@ -108,7 +112,7 @@ mutable struct JobScheduler <: AsbtractJobScheduler
             [Channel{Int}(10) for i ∈ 1:nrunners],
             nothing,
             [],
-            Threads.Atomic{Int}(1),
+            Threads.Atomic{Int}(2),
             true
         )
     end
@@ -143,8 +147,10 @@ end
 function launch_runners!(s::JobScheduler)
     # Launch main inner loop that will queue jobs
     s.inner_loop = @sticky_spawn begin 
+        sleepy = 0.05
         while s.test
             enqueue_waiting!(s)
+            sleepy = Base.max(0.05, sleepy)
             sleep(0.05)
         end
     end
@@ -205,4 +211,13 @@ function schedule_job!(s::JobScheduler, j::Job)
         end
         newj.schedule_time = Dates.now()
     end
+end
+
+function fetch_job(s::JobScheduler, jid::Int)
+    j = from_id(s, jid)
+    if j.freturn === nothing
+        # If j.f runs on the same runner as the inner_loop, this will blonk BEFORE notify can ever be called
+        wait(j.fdata_avail)
+    end
+    return j.freturn
 end

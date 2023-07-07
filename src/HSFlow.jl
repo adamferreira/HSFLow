@@ -28,7 +28,10 @@ nodeid() = myid()
 threadid() = Base.Threads.threadid()
 
 include("schedulers.jl")
-export JobScheduler, scheduler, schedule_job!
+export JobScheduler,
+        scheduler,
+        schedule_job!,
+        fetch_job
 
 # Forward calls with node's scheduler
 scheduler() = SCHEDULER
@@ -38,6 +41,23 @@ for fct in Symbol[
     ]
     @eval $(fct)(args...; kwargs...) = $(fct)(scheduler(), args...; kwargs...)
 end
+
+macro schedule(expr)
+    thunk = esc(:((()->begin
+                      $expr
+                  end)))
+    var = esc(Base.sync_varname)
+    quote
+        local job = Job($thunk)
+        local ref = schedule_job!(scheduler(), job)
+        if $(Expr(:islocal, var))
+            put!($var, ref)
+        end
+        ref
+    end
+end
+
+export @schedule
 
 function __init__()
     global SCHEDULER = JobScheduler(Threads.nthreads())
