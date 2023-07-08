@@ -42,8 +42,9 @@ running = Job(;
     return a + 10
 end
 
-sleep(2)
+#sleep(2)
 x = fetch_job(s, 5)
 @show x
 
-#@show s.datatable
+@show s.datatable
+# julia --project=. --threads=2 -e 'include("example\\simple.jl")' 

@@ -7,7 +7,7 @@ abstract type AsbtractRunner end
 Rewrite of [`Threads.@spawn`](@ref) without scheduling the task.
 And forcing task to stick to their original thread (Runner)
 """
-macro sticky_spawn(expr)
+macro sticky_spawn2(expr)
     letargs = Base._lift_one_interp!(expr)
 
     thunk = esc(:(()->($expr)))
@@ -24,6 +24,11 @@ macro sticky_spawn(expr)
         end
     end
 end
+
+macro sticky_spawn(expr)
+    :(Task(()->$(esc(expr))))
+end
+
 
 mutable struct Runner <: AsbtractRunner
     scheduler::AsbtractJobScheduler
@@ -112,7 +117,7 @@ mutable struct JobScheduler <: AsbtractJobScheduler
             [Channel{Int}(10) for i ∈ 1:nrunners],
             nothing,
             [],
-            Threads.Atomic{Int}(2),
+            Threads.Atomic{Int}(1),
             true
         )
     end
@@ -130,9 +135,8 @@ function unsafe_from_id(s::JobScheduler, jid::Int)::DataFrameRow
 end
 
 function from_id(s::JobScheduler, jid::Int)::DataFrameRow
-    row = nothing
-    @lock s.datatable_lock begin
-        row = unsafe_from_id(s, jid)
+    row = @lock s.datatable_lock begin
+        return unsafe_from_id(s, jid)
     end
     return row
 end
@@ -147,6 +151,7 @@ end
 function launch_runners!(s::JobScheduler)
     # Launch main inner loop that will queue jobs
     s.inner_loop = @sticky_spawn begin 
+        println("Launching Inner Loop on thread ", threadid())
         sleepy = 0.05
         while s.test
             enqueue_waiting!(s)
@@ -157,6 +162,7 @@ function launch_runners!(s::JobScheduler)
     # The inner loop is sticked to the main thread (1 (0 in the ccal))
     ccall(:jl_set_task_tid, Cvoid, (Any, Cint), s.inner_loop, 0)
     schedule(s.inner_loop)
+    sleep(0.05)
 
     # Launch runners, each on a different threads
     s.runners = [Runner(s, s.channels[i], i) for i ∈ 1:s.nrunners]
@@ -215,9 +221,13 @@ end
 
 function fetch_job(s::JobScheduler, jid::Int)
     j = from_id(s, jid)
+    test = j.fdata_avail
+    #sleep(0.05)
+    @show current_task() == s.runners[1].task
     if j.freturn === nothing
         # If j.f runs on the same runner as the inner_loop, this will blonk BEFORE notify can ever be called
-        wait(j.fdata_avail)
+        println("Now waiting on thread ", threadid())
+        wait(test)
     end
     return j.freturn
 end
