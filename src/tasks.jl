@@ -1,4 +1,4 @@
-function AdvancedTask(f; onthread=nothing, at=Dates.now(), holds = [])
+function AdvancedTask(f; at=Dates.now(), holds = [])
     # Outer task, the actual code that will be launched
     ot = @task begin
         it = @task
@@ -9,7 +9,6 @@ function AdvancedTask(f; onthread=nothing, at=Dates.now(), holds = [])
             sleep(Δ)
         end
         # Schedule internal task to "statt" immediatly
-        # TODO, schedule on specific thread
         schedule(it)
         # Wait for all internal task (start time and dependencies) events
         wait(it)
@@ -17,4 +16,11 @@ function AdvancedTask(f; onthread=nothing, at=Dates.now(), holds = [])
         return f()
     end
     return ot
+end
+
+#TODO: support Cron
+function schedule(f; onthread=nothing, at=Dates.now(), holds = [])
+    ot = AdvancedTask(f; at=at, holds=holds)
+    # TODO, schedule `ot` on specific thread
+    schedule(ot)
 end

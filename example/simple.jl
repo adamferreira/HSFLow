@@ -48,3 +48,19 @@ x = fetch_job(s, 5)
 
 @show s.datatable
 # julia --project=. --threads=2 -e 'include("example\\simple.jl")' 
+
+using Dates
+t = @task begin
+    it = @task begin
+        return 10
+    end
+    Δ = (Dates.now() + Dates.Second(30)) - Dates.now()
+    sleep(Δ)
+    schedule(it)
+    return fetch(it)
+end
+
+println("Launching task at ", Dates.now())
+schedule(t)
+y = fetch(t)
+println("Task ended at ", Dates.now(), " with value ", y)
