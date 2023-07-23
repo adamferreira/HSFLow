@@ -93,26 +93,4 @@ function __init__()
     #enqueue_waiting!(SCHEDULER)
 end
 
-"""
-@show j = Job()
-s = JobScheduler()
-
-j1 = Job()
-j2 = Job()
-j3 = Job(; depends = [2,3])
-
-schedule_job!(s, j1)
-schedule_job!(s, j2)
-schedule_job!(s, j3)
-
-#j.f = x -> x + 10
-#j.fargs = 5
-#@show j.f(j.fargs...; j.fkwargs...)
-#@show Base.invoke(j.f, Tuple{Int}, j.fargs...; j.fkwargs...)
-
-println(s.datatable)
-
-enqueue_waiting!(s)
-println(s.queue)
-"""
 end
